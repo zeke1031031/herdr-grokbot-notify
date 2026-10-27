@@ -12,13 +12,16 @@
 #                    Keywords: none (no optional events), all (every optional
 #                    event), default (core events only).
 #   --agents LIST    agent ids or substrings, "*" = every agent (default)
-#   --statuses LIST  default done,idle,blocked
+#   --statuses LIST  default done,idle,blocked ("done,blocked" = only when you're away)
 #   --debounce N     seconds per pane + reason (default 60)
+#   --output-lines N also send the last N lines of the pane (default 0 = off;
+#                    terminal output can contain secrets)
 # Info / maintenance:
 #   --list [--json]  list every event with on/off and a one-line description
 #   --show           config summary (never prints secret values)
 #   --apply          re-create the optional-event registration from saved config
-#   --test           send the plugin's test webhook after saving
+#   --test           send a test webhook (after saving); prints the HTTP code,
+#                    exits non-zero unless it is 2xx
 #   --plugin-id ID   default: id in herdr-plugin.toml
 #   --config-dir DIR default: `herdr plugin config-dir <id>`
 #   --no-herdr       don't link/unlink the companion plugin (tests, dry setups)
@@ -41,10 +44,10 @@ HERDR="${HERDR_BIN_PATH:-herdr}"
 PLUGIN_ID="$(sed -n 's/^id = "\(.*\)"/\1/p' "$ROOT/herdr-plugin.toml" | head -1)"
 [ -n "$PLUGIN_ID" ] || PLUGIN_ID="grokbot-notify"
 CONFIG_DIR="${HERDR_PLUGIN_CONFIG_DIR:-}"
-URL_ENV=0 AUTH_ENV=0 STDIN=0 EVENTS_SPEC="" AGENTS_SET="" STATUSES_SET="" DEBOUNCE_SET=""
+URL_ENV=0 AUTH_ENV=0 STDIN=0 EVENTS_SPEC="" AGENTS_SET="" STATUSES_SET="" DEBOUNCE_SET="" OUTPUT_SET=""
 DO_LIST=0 JSON=0 DO_SHOW=0 DO_APPLY=0 DO_TEST=0 USE_HERDR=1 CHANGED=0
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "configure: $*" >&2; exit 1; }
 need() { [ $# -ge 2 ] || die "$1 needs a value"; }
 
@@ -57,6 +60,7 @@ while [ $# -gt 0 ]; do
     --agents) need "$@"; AGENTS_SET="$2"; CHANGED=1; shift 2 ;;
     --statuses) need "$@"; STATUSES_SET="$2"; CHANGED=1; shift 2 ;;
     --debounce) need "$@"; DEBOUNCE_SET="$2"; CHANGED=1; shift 2 ;;
+    --output-lines) need "$@"; OUTPUT_SET="$2"; CHANGED=1; shift 2 ;;
     --list) DO_LIST=1; shift ;;
     --json) JSON=1; shift ;;
     --show) DO_SHOW=1; shift ;;
@@ -188,10 +192,13 @@ write_companion() { # write_companion <extra-events-comma-list>
     printf 'MAIN_ID=%q\nMAIN_ROOT=%q\nMAIN_CONFIG_DIR=%q\n' "$PLUGIN_ID" "$ROOT" "$CONFIG_DIR"
     cat <<'HOOK'
 H="${HERDR_BIN_PATH:-herdr}"
+for d in /opt/homebrew/bin /usr/local/bin; do case ":$PATH:" in *":$d:"*) ;; *) [ -d "$d" ] && PATH="$PATH:$d" ;; esac; done
 info="$("$H" plugin list --plugin "$MAIN_ID" --json 2>/dev/null || true)"
 if [ -n "$info" ] && command -v jq >/dev/null 2>&1; then
   [ "$(jq -r '.result.plugins[0].enabled == false' <<<"$info")" = true ] && exit 0
-  [ -f "$MAIN_ROOT/notify.sh" ] || MAIN_ROOT="$(jq -r '.result.plugins[0].plugin_root // empty' <<<"$info")"
+  # Follow the current install: `herdr plugin install/update` moves plugin_root.
+  root="$(jq -r '.result.plugins[0].plugin_root // empty' <<<"$info")"
+  [ -z "$root" ] || [ ! -f "$root/notify.sh" ] || MAIN_ROOT="$root"
 fi
 [ -f "$MAIN_ROOT/notify.sh" ] || exit 0
 export HERDR_PLUGIN_CONFIG_DIR="$MAIN_CONFIG_DIR"
@@ -208,7 +215,7 @@ sync_companion() { # sync_companion <full-event-list>
   if [ -n "$extras" ]; then
     write_companion "$extras"
     if [ "$USE_HERDR" = 1 ]; then
-      "$HERDR" plugin link "$COMP_DIR" >/dev/null 2>&1 || die "herdr plugin link $COMP_DIR failed"
+      "$HERDR" plugin link "$COMP_DIR" >/dev/null 2>&1 || { echo "configure: herdr plugin link $COMP_DIR failed" >&2; return 1; }
       "$HERDR" plugin enable "$COMP_ID" >/dev/null 2>&1 || true
     fi
     echo "optional hooks : $extras (via companion plugin $COMP_ID)"
@@ -248,6 +255,8 @@ show() {
   echo "agents         : ${a:-*}"
   echo "statuses       : ${s:-done,idle,blocked}"
   echo "debounce       : ${d:-60}s"
+  local o; o="$(cur GROKBOT_NOTIFY_OUTPUT_LINES)"
+  echo "output lines   : ${o:-0}"
   if [ -f "$COMP_DIR/herdr-plugin.toml" ]; then
     echo "companion      : $COMP_ID ($(sed -n 's/^on = "\(.*\)"/\1/p' "$COMP_DIR/herdr-plugin.toml" | paste -sd, -))"
   else
@@ -277,6 +286,7 @@ if [ "$CHANGED" = 1 ]; then
   statuses="${STATUSES_SET:-$(cur GROKBOT_NOTIFY_STATUSES)}"; statuses="${statuses:-done,idle,blocked}"
   debounce="${DEBOUNCE_SET:-$(cur GROKBOT_NOTIFY_DEBOUNCE_SECS)}"; debounce="${debounce:-60}"
   case "$debounce" in *[!0-9]*) die "--debounce must be a whole number of seconds" ;; esac
+  case "$OUTPUT_SET" in *[!0-9]*) die "--output-lines must be a whole number (0 = off)" ;; esac
   for v in "$agents" "$statuses"; do bad_chars "$v" && die "settings must not contain quotes or backslashes"; done
   agents="$(printf '%s' "$agents" | tr -d '[:space:]')"; statuses="$(printf '%s' "$statuses" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 
@@ -290,17 +300,28 @@ if [ "$CHANGED" = 1 ]; then
     printf 'GROKBOT_NOTIFY_AGENTS=%s\n' "$agents"
     printf 'GROKBOT_NOTIFY_STATUSES=%s\n' "$statuses"
     printf 'GROKBOT_NOTIFY_DEBOUNCE_SECS=%s\n' "$debounce"
+    [ -z "$OUTPUT_SET" ] || printf 'GROKBOT_NOTIFY_OUTPUT_LINES=%s\n' "$OUTPUT_SET"
     if [ -f "$CONFIG_FILE" ]; then
+      skip='AGENTS|EVENTS|STATUSES|DEBOUNCE_SECS'; [ -z "$OUTPUT_SET" ] || skip="$skip|OUTPUT_LINES"
       grep -E '^(export )?GROKBOT_NOTIFY_[A-Z_]+=' "$CONFIG_FILE" \
-        | grep -v -E '^(export )?GROKBOT_NOTIFY_(AGENTS|EVENTS|STATUSES|DEBOUNCE_SECS)=' || true
+        | grep -v -E "^(export )?GROKBOT_NOTIFY_($skip)=" || true
     fi
   } > "$tmp"
-  chmod 600 "$tmp"; mv -f "$tmp" "$CONFIG_FILE"
+  chmod 600 "$tmp"
+  # keep the previous file until herdr has accepted the event registration
+  old_events="$(current_events)" backup=""
+  if [ -f "$CONFIG_FILE" ]; then backup="$(umask 077; mktemp "$CONFIG_DIR/.env.bak.XXXXXX")"; cp -p "$CONFIG_FILE" "$backup"; fi
+  mv -f "$tmp" "$CONFIG_FILE"
   unset url auth
+  if ! sync_companion "$events"; then
+    if [ -n "$backup" ]; then mv -f "$backup" "$CONFIG_FILE"; else rm -f "$CONFIG_FILE"; fi
+    USE_HERDR=0 sync_companion "$old_events" >/dev/null || true
+    die "herdr did not accept the optional event hooks, so nothing was saved (previous settings restored). Check \`herdr plugin list\` and try again."
+  fi
+  [ -z "$backup" ] || rm -f "$backup"
   echo "saved (mode 600): $CONFIG_FILE"
-  sync_companion "$events"
 elif [ "$DO_APPLY" = 1 ]; then
-  sync_companion "$(current_events)"
+  sync_companion "$(current_events)" || die "optional event hooks are NOT registered; fix the error above and run --apply again"
 fi
 
 [ "$DO_LIST" = 0 ] || list_events

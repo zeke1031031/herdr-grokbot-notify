@@ -3,24 +3,32 @@
 # POSTs a small JSON payload to a Grok Bot routine webhook when any
 # herdr-detected coding agent finishes, needs input, or exits, and (opt-in,
 # see configure.sh) for other hookable herdr events. It never prints or logs the webhook URL
-# or Authorization value, and never sends terminal output.
+# or Authorization value, and sends terminal output only if GROKBOT_NOTIFY_OUTPUT_LINES > 0.
 #
 # Usage (normally invoked by herdr):
 #   notify.sh            handle HERDR_PLUGIN_EVENT / HERDR_PLUGIN_EVENT_JSON
 #   notify.sh --test     send a synthetic test payload now
 #   notify.sh --enable   resume sending
 #   notify.sh --disable  pause sending (event hooks stay registered)
-#   notify.sh --status   print config summary (no secret values)
+#   notify.sh --status   print version, paths and settings (secrets shown as set/MISSING)
 #
 # Portable to bash 3.2 (macOS /bin/bash): no ${x,,}, no `local -`, no mapfile.
 set -u
 set -f   # never glob-expand list items such as "*"
 
-VERSION="0.3.0"
+VERSION="0.4.0"
+SCHEMA=1   # payload schema; bump only for breaking changes (see CHANGELOG.md)
 CONFIG_DIR="${HERDR_PLUGIN_CONFIG_DIR:-$HOME/.config/herdr-grokbot-notify}"
 CONFIG_FILE="${GROKBOT_NOTIFY_CONFIG:-$CONFIG_DIR/.env}"
 STATE_DIR="${HERDR_PLUGIN_STATE_DIR:-$HOME/.local/state/herdr-grokbot-notify}"
 HERDR="${HERDR_BIN_PATH:-herdr}"
+
+# herdr may start hooks with a minimal PATH (e.g. a launchd-started server on
+# macOS), which hides Homebrew's jq. Append the usual locations if missing.
+for d in /opt/homebrew/bin /usr/local/bin; do
+  case ":$PATH:" in *":$d:"*) ;; *) [ -d "$d" ] && PATH="$PATH:$d" ;; esac
+done
+export PATH
 
 mkdir -p "$STATE_DIR/panes" 2>/dev/null && chmod 700 "$STATE_DIR" 2>/dev/null
 LOG="$STATE_DIR/notify.log"
@@ -35,7 +43,7 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 safe() { printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '_'; }
 
 # --- config: KEY=VALUE lines, parsed (never sourced/executed). Env vars win. ---
-ALLOWED_KEYS=" GROKBOT_WEBHOOK_URL GROKBOT_WEBHOOK_AUTH GROKBOT_NOTIFY_EVENTS GROKBOT_NOTIFY_STATUSES GROKBOT_NOTIFY_AGENTS GROKBOT_NOTIFY_DEBOUNCE_SECS GROKBOT_NOTIFY_TIMEOUT_SECS GROKBOT_NOTIFY_INCLUDE_HOST "
+ALLOWED_KEYS=" GROKBOT_WEBHOOK_URL GROKBOT_WEBHOOK_AUTH GROKBOT_NOTIFY_EVENTS GROKBOT_NOTIFY_STATUSES GROKBOT_NOTIFY_AGENTS GROKBOT_NOTIFY_DEBOUNCE_SECS GROKBOT_NOTIFY_TIMEOUT_SECS GROKBOT_NOTIFY_INCLUDE_HOST GROKBOT_NOTIFY_OUTPUT_LINES GROKBOT_NOTIFY_OUTPUT_MAX_BYTES "
 load_config() {
   [ -r "$CONFIG_FILE" ] || return 0
   local line key val
@@ -64,8 +72,14 @@ AGENTS="$(lower "${GROKBOT_NOTIFY_AGENTS:-*}")"
 DEBOUNCE_SECS="${GROKBOT_NOTIFY_DEBOUNCE_SECS:-60}"
 TIMEOUT_SECS="${GROKBOT_NOTIFY_TIMEOUT_SECS:-10}"
 INCLUDE_HOST="${GROKBOT_NOTIFY_INCLUDE_HOST:-1}"
+OUTPUT_LINES="${GROKBOT_NOTIFY_OUTPUT_LINES:-0}"
+OUTPUT_MAX_BYTES="${GROKBOT_NOTIFY_OUTPUT_MAX_BYTES:-4000}"
 case "$DEBOUNCE_SECS" in ''|*[!0-9]*) DEBOUNCE_SECS=60 ;; esac
 case "$TIMEOUT_SECS" in ''|*[!0-9]*) TIMEOUT_SECS=10 ;; esac
+case "$OUTPUT_LINES" in ''|*[!0-9]*) OUTPUT_LINES=0 ;; esac
+case "$OUTPUT_MAX_BYTES" in ''|*[!0-9]*) OUTPUT_MAX_BYTES=4000 ;; esac
+[ "$OUTPUT_LINES" -le 500 ] || OUTPUT_LINES=500
+[ "$OUTPUT_MAX_BYTES" -le 65536 ] || OUTPUT_MAX_BYTES=65536
 
 in_list() { # in_list <needle> <comma-list> [substring]
   local needle="$1" list="$2" mode="${3:-exact}" item IFS=','
@@ -109,19 +123,83 @@ send() {
 host_name() {
   if [ "$INCLUDE_HOST" = 1 ]; then hostname -s 2>/dev/null || hostname 2>/dev/null || true; fi
 }
+with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout 5 "$@"; else "$@"; fi; }
 
-# Payload fields (empty ones are dropped). data = raw herdr event data for
-# generic events only.
+# Git branch and repo name for $CWD (repo = main checkout's folder name, also
+# for linked worktrees). Empty outside a repo or without git.
+git_context() {
+  [ -n "$CWD" ] && [ -d "$CWD" ] && command -v git >/dev/null 2>&1 || return 0
+  local common
+  BRANCH="$(git -C "$CWD" symbolic-ref --short -q HEAD 2>/dev/null)" \
+    || BRANCH="$(GIT_OPTIONAL_LOCKS=0 git -C "$CWD" rev-parse --short HEAD 2>/dev/null)" || BRANCH=""   # detached: short sha
+  common="$(cd "$CWD" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)" || common=""
+  case "$common" in
+    */.git) REPO="${common%/.git}"; REPO="${REPO##*/}" ;;
+    ?*) REPO="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"; REPO="${REPO##*/}"
+        [ -n "$REPO" ] || { REPO="${common##*/}"; REPO="${REPO%.git}"; } ;;
+  esac
+}
+
+# Workspace and tab labels as shown in herdr's sidebar.
+herdr_labels() {
+  local j
+  if [ -n "$WS" ] && [ -z "$WS_LABEL" ]; then
+    j="$(with_timeout "$HERDR" workspace get "$WS" 2>/dev/null || true)"
+    WS_LABEL="$(jq -r '.result.workspace.label // empty' <<<"$j" 2>/dev/null)"
+  fi
+  if [ -n "$TAB" ] && [ -z "$TAB_LABEL" ]; then
+    j="$(with_timeout "$HERDR" tab get "$TAB" 2>/dev/null || true)"
+    TAB_LABEL="$(jq -r '.result.tab.label // empty' <<<"$j" 2>/dev/null)"
+  fi
+}
+
+# Last GROKBOT_NOTIFY_OUTPUT_LINES lines of the pane (opt-in), escape sequences
+# and control characters removed, capped at GROKBOT_NOTIFY_OUTPUT_MAX_BYTES
+# (the most recent output is kept).
+pane_output() {
+  [ "$OUTPUT_LINES" -gt 0 ] && [ -n "$PANE" ] || return 0
+  local raw
+  raw="$(with_timeout "$HERDR" pane read "$PANE" --source recent-unwrapped --lines "$OUTPUT_LINES" 2>/dev/null)" || return 0
+  raw="$(printf '%s\n' "$raw" \
+    | LC_ALL=C sed -e $'s/\x1b][^\x07\x1b]*\x07//g' -e $'s/\x1b][^\x1b]*\x1b\\\\//g' \
+        -e $'s/\x1b\\[[0-9;?<=>]*[ -/]*[@-~]//g' -e $'s/\x1b[@-_]//g' \
+    | LC_ALL=C tr -d '\000-\010\013-\037\177')"
+  if [ "$(printf '%s' "$raw" | wc -c | tr -d ' ')" -gt "$OUTPUT_MAX_BYTES" ]; then
+    # drop the first (possibly cut) line so no partial UTF-8 is sent
+    raw="$(printf '%s' "$raw" | tail -c "$OUTPUT_MAX_BYTES" | tail -n +2)"
+    OUTPUT_TRUNC=true
+  fi
+  OUTPUT="$raw"
+}
+
+# Payload fields (empty ones are dropped; README "Payload" documents each one).
+# data = raw herdr event data for generic events only.
 EVENT="" REASON="" WS="" TAB="" PANE="" AGENT="" STATUS="" FINAL="" TITLE="" CWD="" DATA="null"
+WS_LABEL="" TAB_LABEL="" BRANCH="" REPO="" OUTPUT="" OUTPUT_TRUNC=false
 build_body() { # build_body <test:true|false>
-  jq -nc --arg v "$VERSION" --arg e "$EVENT" --arg r "$REASON" --arg ws "$WS" --arg tab "$TAB" \
+  jq -nc --argjson schema "$SCHEMA" --arg v "$VERSION" --arg e "$EVENT" --arg r "$REASON" \
+    --arg ws "$WS" --arg wsl "$WS_LABEL" --arg tab "$TAB" --arg tabl "$TAB_LABEL" \
     --arg p "$PANE" --arg a "$AGENT" --arg s "$STATUS" --arg f "$FINAL" --arg t "$TITLE" \
-    --arg c "$CWD" --arg h "$(host_name)" --arg at "$(now_iso)" --argjson test "$1" \
-    --argjson data "$DATA" \
-    '{source:"herdr",plugin_version:$v,event:$e,reason:$r,workspace_id:$ws,tab_id:$tab,
-      pane_id:$p,agent:$a,agent_status:$s,final_status:$f,title:$t,cwd:$c,host:$h,at:$at}
+    --arg c "$CWD" --arg repo "$REPO" --arg br "$BRANCH" --arg h "$(host_name)" --arg at "$(now_iso)" \
+    --arg out "$OUTPUT" --argjson trunc "$OUTPUT_TRUNC" --argjson test "$1" --argjson data "$DATA" \
+    '{source:"herdr",schema:$schema,plugin_version:$v,event:$e,reason:$r,
+      workspace_id:$ws,workspace_label:$wsl,tab_id:$tab,tab_label:$tabl,pane_id:$p,
+      agent:$a,agent_status:$s,final_status:$f,title:$t,cwd:$c,repo:$repo,branch:$br,host:$h,at:$at}
      | with_entries(select(.value != ""))
-     | . + {test:$test} + (if $data == null then {} else {data:$data} end)'
+     | .message = (if $r == "test" then "Grok Bot Notify test notification" + (if .host then " from " + .host else "" end) else
+         ((.agent // (if $e == "test" then "grokbot-notify" else "herdr" end))
+          + " " + ({finished:"finished", needs_attention:"needs your input",
+                    agent_exited:("exited" + (if $f != "" then " (last status: " + $f + ")" else "" end)),
+                    pane_exited:"pane exited", agent_started:"started", test:"test notification",
+                    status_changed:("is now " + $s), event:$e}[$r] // $r))
+         + (if (.repo // .cwd) then " in " + (.repo // (.cwd | sub("/+$"; "") | split("/") | last))
+              + (if .branch then " (" + .branch + ")" else "" end) else "" end)
+         + (if .title then ": " + .title else "" end)
+         + ([.workspace_label, .tab_label] | map(select(. != null)) | if length > 0 then " [" + join(" / ") + "]" else "" end)
+         + (if .host then " on " + .host else "" end) end)
+     | . + {test:$test}
+     | if $out != "" then . + {output:$out, output_truncated:$trunc} else . end
+     | if $data == null then . else . + {data:$data} end'
 }
 
 # --- subcommands ---
@@ -139,11 +217,14 @@ case "${1:-}" in
     echo "statuses    : $STATUSES"
     echo "agents      : $AGENTS"
     echo "debounce    : ${DEBOUNCE_SECS}s"
+    echo "output lines: $OUTPUT_LINES (max ${OUTPUT_MAX_BYTES} bytes)"
+    echo "log         : $LOG"
     exit 0 ;;
   --test)
     if ! command -v jq >/dev/null || ! command -v curl >/dev/null; then echo "grokbot-notify: needs jq and curl" >&2; exit 1; fi
     have_secrets || { echo "grokbot-notify: webhook URL/Authorization not configured ($CONFIG_FILE)" >&2; exit 1; }
     EVENT="test" REASON="test" WS="test" PANE="test" AGENT="test" STATUS="done" TITLE="grokbot-notify test" CWD="$PWD"
+    git_context
     code="$(send "$(build_body true)")"
     log "test: http=$code"
     echo "grokbot-notify: test webhook -> HTTP $code"
@@ -171,7 +252,6 @@ if ! command -v jq >/dev/null || ! command -v curl >/dev/null; then log "error: 
 [ -n "$EVENT" ] || EVENT="pane.agent_status_changed"   # legacy payloads without a name
 
 get() { jq -r "(.data.$1 // .$1 // .data.pane.$1 // .pane.$1 // .data.workspace.$1 // .data.tab.$1 // empty) | tostring" <<<"$ev" 2>/dev/null; }
-with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout 5 "$@"; else "$@"; fi; }
 
 # --- state helpers (portable mkdir lock; no flock on macOS) ---
 lockdir="$STATE_DIR/.lock"
@@ -187,6 +267,13 @@ lock() {
 unlock() { rmdir "$lockdir" 2>/dev/null; trap - EXIT; }
 rd() { [ -f "$1" ] && cat "$1" 2>/dev/null; }
 forget_pane() { rm -f "$PANES/$1".agent "$PANES/$1".status "$PANES/$1".cseq; }
+# Debounce stamps of one pane's status-driven reasons. Cleared whenever the
+# pane's status changes, so only identical back-to-back transitions are
+# debounced (blocked -> working -> blocked sends twice).
+clear_status_stamps() {
+  local r
+  for r in needs_attention finished working unknown idle "done" blocked; do rm -f "$STATE_DIR/last_$(safe "${1}_$r")"; done
+}
 
 # Fill workspace/tab/title/cwd/agent (and completion seq) from herdr itself.
 CSEQ=""
@@ -223,6 +310,7 @@ deliver() {
     if [ $((now - last)) -lt "$DEBOUNCE_SECS" ]; then unlock; log "debounced: $key"; exit 0; fi
     echo "$now" > "$stamp"; unlock
   fi
+  [ "$REASON" = event ] || { herdr_labels; git_context; pane_output; }
   code="$(send "$(build_body false)")"
   log "sent: event=$EVENT reason=$REASON pane=${PANE:-none} agent=${AGENT:-none} status=${STATUS:-none} http=$code"
   case "$code" in
@@ -254,6 +342,7 @@ case "$EVENT" in
     CWD="$(get cwd)"
     lock
     prev="$(rd "$PANES/$P.status")"
+    [ "$prev" = "$STATUS" ] || clear_status_stamps "$PANE"
     echo "$STATUS" > "$PANES/$P.status"
     [ -z "$AGENT" ] || echo "$AGENT" > "$PANES/$P.agent"
     unlock

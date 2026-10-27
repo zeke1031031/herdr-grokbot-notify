@@ -41,6 +41,12 @@ if [ "\$1 \$2" = "agent get" ]; then
   echo '{"error":{"code":"agent_not_found"}}'; exit 1
 fi
 [ "\$1 \$2" = "pane get" ] && echo '{"result":{"pane":{"agent":"claude","terminal_title_stripped":"Stub title","cwd":"/tmp/repo","workspace_id":"w9","tab_id":"w9:t1"}}}'
+[ "\$1 \$2" = "workspace get" ] && echo "{\"result\":{\"type\":\"workspace_info\",\"workspace\":{\"workspace_id\":\"\$3\",\"label\":\"api-server\"}}}"
+[ "\$1 \$2" = "tab get" ] && echo "{\"result\":{\"type\":\"tab_info\",\"tab\":{\"tab_id\":\"\$3\",\"label\":\"review\"}}}"
+if [ "\$1 \$2" = "pane read" ]; then
+  [ -f "$T/pane.out" ] || exit 1
+  echo "\$*" > "$T/pane.read.args"; cat "$T/pane.out"
+fi
 exit 0
 SH
 chmod +x "$T/herdr"
@@ -64,89 +70,129 @@ check "working->done sends" '[ "$(reqs)" = 1 ]'
 check "auth header normalised" '[ "$(last .auth)" = "$FAKE_AUTH" ]'
 check "content-type json" '[ "$(last .ctype)" = "application/json" ]'
 check "payload fields" '[ "$(last ".body.event+\"|\"+.body.reason+\"|\"+.body.pane_id+\"|\"+.body.agent_status+\"|\"+.body.agent")" = "pane.agent_status_changed|finished|w1:p1|done|claude" ]'
-check "payload has version, no data for agent events" '[ "$(last ".body.plugin_version + (.body|has(\"data\")|tostring)")" = "0.3.0false" ]'
+check "payload has schema + version, no data for agent events" '[ "$(last ".body.plugin_version + \"|\" + (.body.schema|tostring) + \"|\" + (.body|has(\"data\")|tostring)")" = "0.4.0|1|false" ]'
+check "payload has labels and a one-line message" '[ "$(last ".body.workspace_label+\"|\"+.body.tab_label+\"|\"+.body.message")" = "api-server|review|claude finished in repo: t [api-server / review] on $(hostname -s)" ]'
+check "no output field unless opted in" '[ "$(last ".body|has(\"output\")")" = false ] && [ ! -e "$T/pane.read.args" ]'
 run $S "$(st w1:p1 "done" claude)"
 check "debounce same pane+reason" '[ "$(reqs)" = 1 ]'
 run $S "$(st w1:p1 blocked claude)"
 check "blocked sends (needs_attention)" '[ "$(reqs)" = 2 ] && [ "$(last .body.reason)" = needs_attention ]'
 
+# regression (0.3.0): a second prompt after the agent resumed was swallowed by the 60s debounce
+run $S "$(st w1:p1 working claude)"; run $S "$(st w1:p1 blocked claude)"
+check "blocked -> working -> blocked within debounce sends again" '[ "$(reqs)" = 3 ] && [ "$(last .body.reason)" = needs_attention ]'
+run $S "$(st w1:p1 blocked claude)"
+check "identical back-to-back blocked is debounced" '[ "$(reqs)" = 3 ]'
+run $S "$(st w1:p1 working claude)"; run $S "$(st w1:p1 "done" claude)"
+check "done -> working -> done within debounce sends again" '[ "$(reqs)" = 4 ] && [ "$(last .body.reason)" = finished ]'
+
 for a in gemini cursor opencode grok amp kiro copilot hermes; do run $S "$(st "w1:$a" "done" "$a")"; done
-check "default agents = all (8 other agents sent)" '[ "$(reqs)" = 10 ]'
+check "default agents = all (8 other agents sent)" '[ "$(reqs)" = 12 ]'
 
 run $S "$(st w1:q1 working codex)"; run $S "$(st w1:q1 idle codex)"
-check "working->idle (seen while focused) sends as finished" '[ "$(reqs)" = 11 ] && [ "$(last .body.reason)" = finished ]'
+check "working->idle (seen while focused) sends as finished" '[ "$(reqs)" = 13 ] && [ "$(last .body.reason)" = finished ]'
 run $S "$(st w1:q2 idle codex)"
-check "idle without prior work (startup) is quiet" '[ "$(reqs)" = 11 ]'
+check "idle without prior work (startup) is quiet" '[ "$(reqs)" = 13 ]'
 
 # completion_seq from `herdr agent get` dedupes done->idle and catches every turn
 mkcfg ok 'GROKBOT_NOTIFY_DEBOUNCE_SECS=0
 '
 agentinfo w1:c1 pi 7
 run $S "$(st w1:c1 "done" pi)"
-check "completion_seq 7 sent" '[ "$(reqs)" = 12 ] && [ "$(last .body.cwd)" = /a ] && [ "$(last .body.tab_id)" = w1:t1 ]'
+check "completion_seq 7 sent" '[ "$(reqs)" = 14 ] && [ "$(last .body.cwd)" = /a ] && [ "$(last .body.tab_id)" = w1:t1 ]'
 run $S "$(st w1:c1 idle pi)"
-check "done->idle same completion_seq not resent" '[ "$(reqs)" = 12 ]'
+check "done->idle same completion_seq not resent" '[ "$(reqs)" = 14 ]'
 agentinfo w1:c1 pi 9
 run $S "$(st w1:c1 idle pi)"
-check "next completion_seq sent even if back-to-back" '[ "$(reqs)" = 13 ]'
+check "next completion_seq sent even if back-to-back" '[ "$(reqs)" = 15 ]'
 agentinfo w1:c2 pi null
 run $S "$(st w1:c2 idle pi)"
-check "idle with completion_seq=null and no work is quiet" '[ "$(reqs)" = 13 ]'
+check "idle with completion_seq=null and no work is quiet" '[ "$(reqs)" = 15 ]'
 mkcfg ok
 
 # --- filters ----------------------------------------------------------------
 run $S "$(st w1:f1 "done" aider)" GROKBOT_NOTIFY_AGENTS=claude,codex
-check "agent allowlist filters" '[ "$(reqs)" = 13 ]'
+check "agent allowlist filters" '[ "$(reqs)" = 15 ]'
 run $S "$(st w1:f1 "done" codex)" GROKBOT_NOTIFY_AGENTS=claude,codex
-check "agent allowlist allows" '[ "$(reqs)" = 14 ]'
+check "agent allowlist allows" '[ "$(reqs)" = 16 ]'
 ( cd "$T" && touch "glob-trap" && run $S "$(st w1:f2 "done" claude)" GROKBOT_NOTIFY_AGENTS='*' )
-check "* is not glob-expanded" '[ "$(reqs)" = 15 ]'
+check "* is not glob-expanded" '[ "$(reqs)" = 17 ]'
 run $S "$(st w1:f3 working claude)" GROKBOT_NOTIFY_STATUSES=working
-check "opt-in working status" '[ "$(reqs)" = 16 ] && [ "$(last .body.reason)" = status_changed ]'
+check "opt-in working status" '[ "$(reqs)" = 18 ] && [ "$(last .body.reason)" = status_changed ]'
 run $S "$(st w1:f4 blocked claude)" GROKBOT_NOTIFY_EVENTS=tab.created
-check "agent status events can be turned off" '[ "$(reqs)" = 16 ]'
+check "agent status events can be turned off" '[ "$(reqs)" = 18 ]'
 
 run $S '{"data":{"pane_id":"w2:p1","agent_status":"blocked"}}'
-check "enrichment via herdr pane get" '[ "$(reqs)" = 17 ] && [ "$(last .body.title)" = "Stub title" ] && [ "$(last .body.workspace_id)" = w9 ] && [ "$(last .body.tab_id)" = w9:t1 ]'
+check "enrichment via herdr pane get" '[ "$(reqs)" = 19 ] && [ "$(last .body.title)" = "Stub title" ] && [ "$(last .body.workspace_id)" = w9 ] && [ "$(last .body.tab_id)" = w9:t1 ]'
+
+# --- context: git branch / repo, opt-in pane output ---------------------------
+mkcfg ok 'GROKBOT_NOTIFY_DEBOUNCE_SECS=0
+'
+G="$T/src/myrepo"; mkdir -p "$G"
+HAVE_GIT=0
+if command -v git >/dev/null && git -C "$G" init -q && git -C "$G" checkout -q -b feat/login \
+   && git -C "$G" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init \
+   && git -C "$G" worktree add -q -b feat/wt "$T/src/myrepo-wt" 2>/dev/null; then HAVE_GIT=1; fi
+mkdir -p "$T/src/myrepo-wt"
+# these two always send (git context is just empty without git), so counts stay stable
+printf '{"agent":"codex","agent_status":"done","cwd":"%s","workspace_id":"w1","tab_id":"w1:t1"}' "$G" > "$T/agent/w1_g1.json"
+run $S "$(st w1:g1 "done" codex)"
+[ $HAVE_GIT = 0 ] || check "git branch and repo name in payload" '[ "$(last ".body.repo+\"|\"+.body.branch")" = "myrepo|feat/login" ] && last .body.message | grep -q "codex finished in myrepo (feat/login)"'
+printf '{"agent":"codex","agent_status":"done","cwd":"%s","workspace_id":"w1","tab_id":"w1:t1"}' "$T/src/myrepo-wt" > "$T/agent/w1_g2.json"
+run $S "$(st w1:g2 "done" codex)"
+[ $HAVE_GIT = 0 ] || check "linked worktree reports the main repo name" '[ "$(last ".body.repo+\"|\"+.body.branch")" = "myrepo|feat/wt" ]'
+[ $HAVE_GIT = 1 ] || echo "SKIP git context (git missing or too old)"
+printf 'line one\n\033[1;31mERROR\033[0m: test failed\r\nlast line\n' > "$T/pane.out"
+run $S "$(st w1:o1 "done" claude)" GROKBOT_NOTIFY_OUTPUT_LINES=40
+check "opt-in output: last N lines via recent-unwrapped, ANSI stripped" '[ "$(last .body.output)" = "$(printf "line one\nERROR: test failed\nlast line")" ] && [ "$(last .body.output_truncated)" = false ] && grep -q -- "--source recent-unwrapped --lines 40" "$T/pane.read.args"'
+awk 'BEGIN{for(i=1;i<=400;i++) printf "line %03d xxxxxxxxxxxxxxxxxxxx\n", i}' > "$T/pane.out"
+run $S "$(st w1:o2 "done" claude)" GROKBOT_NOTIFY_OUTPUT_LINES=400 GROKBOT_NOTIFY_OUTPUT_MAX_BYTES=300
+check "opt-in output: byte cap keeps the newest whole lines" '[ "$(last ".body.output|length")" -le 300 ] && [ "$(last .body.output_truncated)" = true ] && last .body.output | tail -1 | grep -q "^line 400 " && last .body.output | head -1 | grep -q "^line [0-9]* x\{20\}$"'
+rm -f "$T/pane.out" "$T/pane.read.args"
+mkcfg ok
 
 # --- exits ------------------------------------------------------------------
 run pane.agent_detected '{"event":"pane.agent_detected","data":{"pane_id":"w1:x1","workspace_id":"w1","agent":"droid"}}'
-check "agent start quiet by default" '[ "$(reqs)" = 17 ]'
+check "agent start quiet by default" '[ "$(reqs)" = 23 ]'
 run pane.agent_detected '{"event":"pane.agent_detected","data":{"pane_id":"w1:x1","workspace_id":"w1","released":true,"final_status":"working"}}'
 check "agent released -> agent_exited with final_status + remembered agent" \
-  '[ "$(reqs)" = 18 ] && [ "$(last ".body.reason+\"|\"+.body.final_status+\"|\"+.body.agent")" = "agent_exited|working|droid" ]'
+  '[ "$(reqs)" = 24 ] && [ "$(last ".body.reason+\"|\"+.body.final_status+\"|\"+.body.agent")" = "agent_exited|working|droid" ]'
 run pane.exited '{"event":"pane.exited","data":{"pane_id":"w1:x1","workspace_id":"w1"}}'
-check "pane.exited after release is not duplicated" '[ "$(reqs)" = 18 ]'
+check "pane.exited after release is not duplicated" '[ "$(reqs)" = 24 ]'
 run $S "$(st w1:x2 working kimi)"
 run pane.exited '{"event":"pane.exited","data":{"pane_id":"w1:x2","workspace_id":"w1"}}'
-check "pane.exited of an agent pane -> pane_exited" '[ "$(reqs)" = 19 ] && [ "$(last ".body.reason+\"|\"+.body.agent+\"|\"+.body.final_status")" = "pane_exited|kimi|working" ]'
+check "pane.exited of an agent pane -> pane_exited" '[ "$(reqs)" = 25 ] && [ "$(last ".body.reason+\"|\"+.body.agent+\"|\"+.body.final_status")" = "pane_exited|kimi|working" ]'
 run pane.exited '{"event":"pane.exited","data":{"pane_id":"w1:sh","workspace_id":"w1"}}'
-check "pane.exited of a plain shell is quiet" '[ "$(reqs)" = 19 ]'
+check "pane.exited of a plain shell is quiet" '[ "$(reqs)" = 25 ]'
 run pane.agent_detected '{"event":"pane.agent_detected","data":{"pane_id":"w1:x3","workspace_id":"w1","agent":"qwen"}}' GROKBOT_NOTIFY_EVENTS=pane.agent_detected
-check "opt-in agent_started" '[ "$(reqs)" = 20 ] && [ "$(last .body.reason)" = agent_started ]'
+check "opt-in agent_started" '[ "$(reqs)" = 26 ] && [ "$(last .body.reason)" = agent_started ]'
 
 # --- generic opt-in events ----------------------------------------------------
 run tab.created '{"event":"tab.created","data":{"type":"tab_created","tab":{"tab_id":"w1:t2","workspace_id":"w1","label":"x"}}}'
-check "other events off by default" '[ "$(reqs)" = 20 ]'
+check "other events off by default" '[ "$(reqs)" = 26 ]'
 run tab.created '{"event":"tab.created","data":{"type":"tab_created","tab":{"tab_id":"w1:t2","workspace_id":"w1","label":"x"}}}' GROKBOT_NOTIFY_EVENTS=tab.created,worktree.created
-check "opt-in tab.created with raw data" '[ "$(reqs)" = 21 ] && [ "$(last ".body.event+\"|\"+.body.reason+\"|\"+.body.data.tab.tab_id")" = "tab.created|event|w1:t2" ]'
+check "opt-in tab.created with raw data" '[ "$(reqs)" = 27 ] && [ "$(last ".body.event+\"|\"+.body.reason+\"|\"+.body.data.tab.tab_id")" = "tab.created|event|w1:t2" ]'
 run worktree.removed '{"event":"worktree.removed","data":{"workspace_id":"w1","forced":false,"worktree":{"path":"/r/wt"}}}' GROKBOT_NOTIFY_EVENTS='*'
-check "EVENTS=* forwards anything" '[ "$(reqs)" = 22 ] && [ "$(last .body.workspace_id)" = w1 ]'
+check "EVENTS=* forwards anything" '[ "$(reqs)" = 28 ] && [ "$(last .body.workspace_id)" = w1 ]'
 run workspace.moved '{"event":"workspace.moved","data":{"workspace_id":"w1"}}' GROKBOT_NOTIFY_EVENTS=tab.created
-check "unlisted event ignored" '[ "$(reqs)" = 22 ]'
+check "unlisted event ignored" '[ "$(reqs)" = 28 ]'
 
 # --- failure / control paths ---------------------------------------------------
 mkcfg fail
 run $S "$(st w1:p5 "done" claude)"; run $S "$(st w1:p5 "done" claude)"
-check "non-2xx clears stamp (retry)" '[ "$(reqs)" = 24 ]'
+check "non-2xx clears stamp (retry)" '[ "$(reqs)" = 30 ]'
 check "500 logged" 'grep -q "http=500" "$T/state/notify.log"'
 
 mkcfg ok
 : > "$T/state/disabled"; run $S "$(st w1:p6 "done" claude)"
-check "disabled flag pauses" '[ "$(reqs)" = 24 ]'; rm -f "$T/state/disabled"
+check "disabled flag pauses" '[ "$(reqs)" = 30 ]'; rm -f "$T/state/disabled"
 
 out="$(env -i PATH="$PATH" HOME="$T/home" HERDR_PLUGIN_STATE_DIR="$T/state" GROKBOT_NOTIFY_CONFIG="$T/cfg.env" bash "$ROOT/notify.sh" --test)"
-check "--test action ($out)" '[ "$(last .body.test)" = true ] && [ "$(last .body.reason)" = test ]'
+check "--test action ($out)" '[ "$(last .body.test)" = true ] && [ "$(last .body.reason)" = test ] && [ "$(last .body.schema)" = 1 ] && last .body.message | grep -q "^Grok Bot Notify test notification"'
+mkcfg fail
+env -i PATH="$PATH" HOME="$T/home" HERDR_PLUGIN_STATE_DIR="$T/state" GROKBOT_NOTIFY_CONFIG="$T/cfg.env" bash "$ROOT/notify.sh" --test >/dev/null; r=$?
+check "--test exits non-zero on HTTP 500" '[ "$r" != 0 ]'
+mkcfg ok
 
 stat_out="$(env -i PATH="$PATH" HOME="$T/home" HERDR_PLUGIN_STATE_DIR="$T/state" GROKBOT_NOTIFY_CONFIG="$T/cfg.env" bash "$ROOT/notify.sh" --status)"
 check "no secrets in --status or log" '! grep -q -e test-not-a-real-token -e "127.0.0.1:$PORT" <<<"$stat_out$(cat "$T/state/notify.log")"'
@@ -169,7 +215,7 @@ cat > "$H2" <<SH
 echo "\$*" >> "$HL"
 case "\$1 \$2" in
   "plugin config-dir") echo "$CD" ;;
-  "plugin link") echo linked > "$T/comp.linked" ;;
+  "plugin link") [ -f "$T/link.fails" ] && exit 1; echo linked > "$T/comp.linked" ;;
   "plugin unlink") rm -f "$T/comp.linked" ;;
   "plugin list")
     if [ "\$4" = grokbot-notify-events ]; then
@@ -211,10 +257,13 @@ env -i PATH="$PATH" HOME="$T/home" HERDR_PLUGIN_STATE_DIR="$T/mstate" HERDR_PLUG
 comp
 check "companion: resumes after --enable" '[ "$(reqs)" = 2 ]'
 
+sed -i.bak "s|^MAIN_ROOT=.*|MAIN_ROOT=$T/old-install-that-moved|" "$CD/events-plugin/hook.sh"; mkdir -p "$T/old-install-that-moved"; printf 'exit 0\n' > "$T/old-install-that-moved/notify.sh"
+comp
+check "companion: follows the current install root after an update" '[ "$(reqs)" = 3 ]'
 env -i PATH="$PATH" HOME="$T/home" HERDR_BIN_PATH="$H2" HERDR_PLUGIN_STATE_DIR="$T/cstate" HERDR_PLUGIN_EVENT=workspace.created \
   HERDR_PLUGIN_EVENT_JSON='{"event":"workspace.created","data":{"type":"workspace_created","workspace":{"workspace_id":"wZ","label":"x"}}}' \
   GROKBOT_NOTIFY_EVENTS=workspace.created bash "$CD/events-plugin/hook.sh"
-check "companion: workspace_id read from nested workspace object" '[ "$(reqs)" = 3 ] && [ "$(last .body.workspace_id)" = wZ ]'
+check "companion: workspace_id read from nested workspace object" '[ "$(reqs)" = 4 ] && [ "$(last .body.workspace_id)" = wZ ]'
 out="$(conf bash "$ROOT/configure.sh" --events none 2>&1)"
 check "configure: none removes companion and unlinks" '[ ! -d "$CD/events-plugin" ] && [ ! -f "$T/comp.linked" ] && grep -q "plugin unlink grokbot-notify-events" "$HL"'
 conf bash "$ROOT/configure.sh" --events tab.closed,pane.moved >/dev/null
@@ -233,6 +282,17 @@ conf bash "$ROOT/configure.sh" --url "$FAKE_URL" >/dev/null 2>&1; r5=$?
 check "configure: rejects focus/unknown events, http, quotes, secret args; nothing written" '[ $r1 != 0 ] && [ $r2 != 0 ] && [ $r3 != 0 ] && [ $r4 != 0 ] && [ $r5 != 0 ] && [ "$(cat "$CD/.env")" = "$before" ]'
 printf '%s\n%s\n' "$FAKE_URL" "Bearer from-stdin-fake" | conf bash "$ROOT/configure.sh" --secrets-from-stdin --agents claude,codex --debounce 30 >/dev/null
 check "configure: --secrets-from-stdin + settings" 'grep -q "^GROKBOT_WEBHOOK_AUTH=Bearer from-stdin-fake$" "$CD/.env" && grep -q "^GROKBOT_NOTIFY_AGENTS=claude,codex$" "$CD/.env" && grep -q "^GROKBOT_NOTIFY_DEBOUNCE_SECS=30$" "$CD/.env"'
+before="$(cat "$CD/.env")"
+: > "$T/link.fails"
+out="$(conf bash "$ROOT/configure.sh" --events +tab.created --debounce 5 2>&1)"; r=$?
+rm -f "$T/link.fails"
+check "configure: failed herdr link restores the previous .env and says so" '[ $r != 0 ] && [ "$(cat "$CD/.env")" = "$before" ] && [ ! -d "$CD/events-plugin" ] && grep -q "nothing was saved" <<<"$out"'
+conf bash "$ROOT/configure.sh" --output-lines 30 >/dev/null
+check "configure: --output-lines saved; secrets kept" 'grep -q "^GROKBOT_NOTIFY_OUTPUT_LINES=30$" "$CD/.env" && grep -q "^GROKBOT_WEBHOOK_AUTH=Bearer from-stdin-fake$" "$CD/.env"'
+conf bash "$ROOT/configure.sh" --debounce 10 >/dev/null
+check "configure: other edits keep output lines" '[ "$(grep -c "^GROKBOT_NOTIFY_OUTPUT_LINES=30$" "$CD/.env")" = 1 ]'
+conf bash "$ROOT/configure.sh" --test >/dev/null 2>&1; r=$?
+check "configure: --test fails (non-zero) when the webhook is unreachable" '[ $r != 0 ]'
 show="$(conf bash "$ROOT/configure.sh" --show)"
 check "configure: --show reports set/missing only" 'grep -q "webhook url *: set" <<<"$show" && ! grep -q -e from-stdin-fake -e fake-not-real <<<"$show"'
 

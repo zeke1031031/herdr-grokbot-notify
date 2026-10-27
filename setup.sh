@@ -43,14 +43,19 @@ case "${adv:-}" in
     [ -z "${ev//[[:space:]]/}" ] || flags+=(--events "$ev")
     read -r -p "  Agents (claude,codex,... or *; Enter = no change): " ag || true
     [ -z "${ag//[[:space:]]/}" ] || flags+=(--agents "$ag")
-    read -r -p "  Statuses (done,idle,blocked,working,unknown; Enter = no change): " stt || true
+    echo "  Statuses: done,idle,blocked (default) or done,blocked = only while you're not looking at the pane."
+    read -r -p "  Statuses (Enter = no change): " stt || true
     [ -z "${stt//[[:space:]]/}" ] || flags+=(--statuses "$stt")
     read -r -p "  Debounce seconds (Enter = no change): " db || true
-    [ -z "${db//[[:space:]]/}" ] || flags+=(--debounce "$db") ;;
+    [ -z "${db//[[:space:]]/}" ] || flags+=(--debounce "$db")
+    echo "  Pane output: send the last N lines of the agent's pane with each notification."
+    echo "  Off by default. Terminal output can contain secrets and is sent to your routine."
+    read -r -p "  Output lines (0 = off; Enter = no change): " ol || true
+    [ -z "${ol//[[:space:]]/}" ] || flags+=(--output-lines "$ol") ;;
 esac
 
 if [ ${#flags[@]} -gt 0 ]; then
-  cfg "${flags[@]}" || { echo "Nothing changed."; }
+  cfg "${flags[@]}" || echo "Setup did not finish: see the message above. Your previous settings are unchanged."
 else
   echo "Nothing changed."
 fi

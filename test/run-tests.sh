@@ -64,7 +64,7 @@ check "working->done sends" '[ "$(reqs)" = 1 ]'
 check "auth header normalised" '[ "$(last .auth)" = "$FAKE_AUTH" ]'
 check "content-type json" '[ "$(last .ctype)" = "application/json" ]'
 check "payload fields" '[ "$(last ".body.event+\"|\"+.body.reason+\"|\"+.body.pane_id+\"|\"+.body.agent_status+\"|\"+.body.agent")" = "pane.agent_status_changed|finished|w1:p1|done|claude" ]'
-check "payload has version, no data for agent events" '[ "$(last ".body.plugin_version + (.body|has(\"data\")|tostring)")" = "0.2.0false" ]'
+check "payload has version, no data for agent events" '[ "$(last ".body.plugin_version + (.body|has(\"data\")|tostring)")" = "0.3.0false" ]'
 run $S "$(st w1:p1 "done" claude)"
 check "debounce same pane+reason" '[ "$(reqs)" = 1 ]'
 run $S "$(st w1:p1 blocked claude)"
@@ -156,11 +156,85 @@ printf 'GROKBOT_WEBHOOK_URL=http://127.0.0.1:%s/ok\nGROKBOT_WEBHOOK_AUTH=x\nGROK
 run $S "$(st w1:p7 "done" claude)"
 check ".env is parsed, not executed" '[ ! -e "$T/pwned" ]'
 
-# every declared hook is a known herdr 0.9.5 plugin event
+# every declared hook is a known herdr 0.9.5 plugin event; only the core three by default
 known=" pane.agent_status_changed pane.agent_detected pane.exited workspace.created workspace.updated workspace.closed workspace.renamed workspace.moved workspace.reordered worktree.created worktree.opened worktree.removed tab.created tab.closed tab.renamed tab.moved pane.created pane.closed pane.moved "
-n=0; badev=""
-for e in $(sed -n 's/^on = "\(.*\)"/\1/p' "$ROOT/herdr-plugin.toml"); do n=$((n+1)); case "$known" in *" $e "*) ;; *) badev="$badev $e" ;; esac; done
-check "manifest declares 19 hookable events, no *.focused ($n)" '[ "$n" = 19 ] && [ -z "$badev" ] && ! grep -q "\\.focused\"" "$ROOT/herdr-plugin.toml"'
+evs="$(sed -n 's/^on = "\(.*\)"/\1/p' "$ROOT/herdr-plugin.toml" | paste -sd, -)"
+check "manifest registers only core agent events ($evs)" '[ "$evs" = "pane.agent_status_changed,pane.agent_detected,pane.exited" ]'
+
+# --- configure.sh (stub herdr records link/unlink; fake secrets only) ------
+MANI_SUM="$(cksum < "$ROOT/herdr-plugin.toml")"
+CD="$T/cfgdir"; H2="$T/herdr2"; HL="$T/herdr2.log"
+cat > "$H2" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$HL"
+case "\$1 \$2" in
+  "plugin config-dir") echo "$CD" ;;
+  "plugin link") echo linked > "$T/comp.linked" ;;
+  "plugin unlink") rm -f "$T/comp.linked" ;;
+  "plugin list")
+    if [ "\$4" = grokbot-notify-events ]; then
+      [ -f "$T/comp.linked" ] && echo '{"result":{"plugins":[{"plugin_id":"grokbot-notify-events","enabled":true}]}}' || echo '{"result":{"plugins":[]}}'
+    else
+      en=true; [ -f "$T/main.disabled" ] && en=false
+      echo "{\"result\":{\"plugins\":[{\"plugin_id\":\"grokbot-notify\",\"enabled\":\$en,\"plugin_root\":\"$ROOT\"}]}}"
+    fi ;;
+esac
+exit 0
+SH
+chmod +x "$H2"
+conf() { env -i PATH="$PATH" HOME="$T/home" HERDR_BIN_PATH="$H2" "$@"; }
+FAKE_URL="https://example.invalid/hooks/fake-not-real"
+
+out="$(conf GROKBOT_WEBHOOK_URL="$FAKE_URL" GROKBOT_WEBHOOK_AUTH="$FAKE_AUTH" bash "$ROOT/configure.sh" --url-from-env --auth-from-env 2>&1)"
+check "configure: writes .env with mode 600 via herdr config-dir" '[ -f "$CD/.env" ] && [ "$(stat -c %a "$CD/.env" 2>/dev/null || stat -f %Lp "$CD/.env")" = 600 ]'
+check "configure: default = core events, no companion" 'grep -q "^GROKBOT_NOTIFY_EVENTS=pane.agent_status_changed,agent.released,pane.exited$" "$CD/.env" && [ ! -d "$CD/events-plugin" ] && ! grep -q "plugin link" "$HL"'
+check "configure: never echoes secrets" '! grep -q -e test-not-a-real-token -e fake-not-real <<<"$out"'
+
+out="$(conf bash "$ROOT/configure.sh" --events +tab.created,+worktree.created,-pane.exited,+pane.agent_detected 2>&1)"
+check "configure: +/- edits keep secrets" 'grep -q "^GROKBOT_WEBHOOK_URL=$FAKE_URL$" "$CD/.env" && grep -q "^GROKBOT_NOTIFY_EVENTS=pane.agent_status_changed,agent.released,pane.agent_detected,worktree.created,tab.created$" "$CD/.env"'
+check "configure: companion lists only lifecycle extras and is linked" '[ "$(sed -n "s/^on = \"\(.*\)\"/\1/p" "$CD/events-plugin/herdr-plugin.toml" | paste -sd, -)" = worktree.created,tab.created ] && grep -q "plugin link $CD/events-plugin" "$HL" && [ -f "$T/comp.linked" ]'
+check "configure: plugin checkout left untouched" '[ "$(cksum < "$ROOT/herdr-plugin.toml")" = "$MANI_SUM" ] && [ ! -e "$ROOT/events-plugin" ]'
+
+# companion hook forwards to main notify.sh using the main config dir
+: > "$T/req.log"
+printf 'GROKBOT_WEBHOOK_URL=http://127.0.0.1:%s/ok\nGROKBOT_WEBHOOK_AUTH=%s\nGROKBOT_NOTIFY_EVENTS=tab.created\n' "$PORT" "$FAKE_AUTH" > "$CD/.env"
+comp() { env -i PATH="$PATH" HOME="$T/home" HERDR_BIN_PATH="$H2" HERDR_PLUGIN_STATE_DIR="$T/cstate" HERDR_PLUGIN_CONFIG_DIR="$T/wrong" \
+  HERDR_PLUGIN_EVENT=tab.created HERDR_PLUGIN_EVENT_JSON='{"event":"tab.created","data":{"tab":{"tab_id":"w1:t5","workspace_id":"w1"}}}' bash "$CD/events-plugin/hook.sh"; }
+comp
+check "companion: forwards opted-in event" '[ "$(reqs)" = 1 ] && [ "$(last .body.event)" = tab.created ] && [ "$(last .body.reason)" = event ]'
+: > "$T/main.disabled"; comp; rm -f "$T/main.disabled"
+check "companion: silent when main plugin is disabled in herdr" '[ "$(reqs)" = 1 ]'
+env -i PATH="$PATH" HOME="$T/home" HERDR_PLUGIN_STATE_DIR="$T/mstate" HERDR_PLUGIN_CONFIG_DIR="$CD" bash "$ROOT/notify.sh" --disable >/dev/null
+comp
+check "companion: honours the shared pause flag" '[ "$(reqs)" = 1 ] && [ -e "$CD/paused" ]'
+env -i PATH="$PATH" HOME="$T/home" HERDR_PLUGIN_STATE_DIR="$T/mstate" HERDR_PLUGIN_CONFIG_DIR="$CD" bash "$ROOT/notify.sh" --enable >/dev/null
+comp
+check "companion: resumes after --enable" '[ "$(reqs)" = 2 ]'
+
+env -i PATH="$PATH" HOME="$T/home" HERDR_BIN_PATH="$H2" HERDR_PLUGIN_STATE_DIR="$T/cstate" HERDR_PLUGIN_EVENT=workspace.created \
+  HERDR_PLUGIN_EVENT_JSON='{"event":"workspace.created","data":{"type":"workspace_created","workspace":{"workspace_id":"wZ","label":"x"}}}' \
+  GROKBOT_NOTIFY_EVENTS=workspace.created bash "$CD/events-plugin/hook.sh"
+check "companion: workspace_id read from nested workspace object" '[ "$(reqs)" = 3 ] && [ "$(last .body.workspace_id)" = wZ ]'
+out="$(conf bash "$ROOT/configure.sh" --events none 2>&1)"
+check "configure: none removes companion and unlinks" '[ ! -d "$CD/events-plugin" ] && [ ! -f "$T/comp.linked" ] && grep -q "plugin unlink grokbot-notify-events" "$HL"'
+conf bash "$ROOT/configure.sh" --events tab.closed,pane.moved >/dev/null
+check "configure: bare names replace optional set, core kept" 'grep -q "^GROKBOT_NOTIFY_EVENTS=tab.closed,pane.moved$" "$CD/.env"'
+conf bash "$ROOT/configure.sh" --events default >/dev/null
+check "configure: default restores core only" 'grep -q "^GROKBOT_NOTIFY_EVENTS=pane.agent_status_changed,agent.released,pane.exited$" "$CD/.env" && [ ! -d "$CD/events-plugin" ]'
+
+js="$(conf bash "$ROOT/configure.sh" --list --json)"
+check "configure: --list --json has 20 entries, 3 on by default" '[ "$(jq length <<<"$js")" = 20 ] && [ "$(jq "[.[]|select(.enabled)]|length" <<<"$js")" = 3 ] && [ "$(jq -r "[.[]|select(.default)|.name]|join(\",\")" <<<"$js")" = pane.agent_status_changed,agent.released,pane.exited ]'
+before="$(cat "$CD/.env")"
+conf bash "$ROOT/configure.sh" --events +tab.focused >/dev/null 2>&1; r1=$?
+conf bash "$ROOT/configure.sh" --events +nope.event >/dev/null 2>&1; r2=$?
+conf GROKBOT_WEBHOOK_URL="http://example.invalid/x" bash "$ROOT/configure.sh" --url-from-env >/dev/null 2>&1; r3=$?
+conf GROKBOT_WEBHOOK_URL='https://x.invalid/"q' bash "$ROOT/configure.sh" --url-from-env >/dev/null 2>&1; r4=$?
+conf bash "$ROOT/configure.sh" --url "$FAKE_URL" >/dev/null 2>&1; r5=$?
+check "configure: rejects focus/unknown events, http, quotes, secret args; nothing written" '[ $r1 != 0 ] && [ $r2 != 0 ] && [ $r3 != 0 ] && [ $r4 != 0 ] && [ $r5 != 0 ] && [ "$(cat "$CD/.env")" = "$before" ]'
+printf '%s\n%s\n' "$FAKE_URL" "Bearer from-stdin-fake" | conf bash "$ROOT/configure.sh" --secrets-from-stdin --agents claude,codex --debounce 30 >/dev/null
+check "configure: --secrets-from-stdin + settings" 'grep -q "^GROKBOT_WEBHOOK_AUTH=Bearer from-stdin-fake$" "$CD/.env" && grep -q "^GROKBOT_NOTIFY_AGENTS=claude,codex$" "$CD/.env" && grep -q "^GROKBOT_NOTIFY_DEBOUNCE_SECS=30$" "$CD/.env"'
+show="$(conf bash "$ROOT/configure.sh" --show)"
+check "configure: --show reports set/missing only" 'grep -q "webhook url *: set" <<<"$show" && ! grep -q -e from-stdin-fake -e fake-not-real <<<"$show"'
 
 echo "---- $pass passed, $fail failed"
 [ "$fail" = 0 ]

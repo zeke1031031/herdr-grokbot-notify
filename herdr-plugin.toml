@@ -1,15 +1,15 @@
 id = "grokbot-notify"
 name = "Grok Bot Notify"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.5"
 description = "Wake a Grok Bot routine (webhook) when any herdr-detected coding agent finishes, needs input, or exits; optionally forward other herdr events."
 platforms = ["linux", "macos"]
 
-# Every hookable herdr 0.9.5 plugin event except the *.focused ones is
-# registered so it can be enabled from config without editing this file.
-# Focus events fire on every click/switch, so they are left out to avoid
-# spawning a hook process each time. notify.sh exits immediately for any
-# event not listed in GROKBOT_NOTIFY_EVENTS (default: agent signals only).
+# Only the agent signals are registered here, so by default herdr starts a hook
+# process for nothing else. Optional events (workspace.*, worktree.*, tab.*,
+# pane.created/closed/moved) are registered by `configure.sh --events +...`,
+# which generates a small companion plugin (<id>-events) in the config dir.
+# This file is never rewritten, so `git pull` / `herdr plugin update` stay clean.
 [[events]]
 on = "pane.agent_status_changed"
 command = ["bash", "notify.sh"]
@@ -20,70 +20,6 @@ command = ["bash", "notify.sh"]
 
 [[events]]
 on = "pane.exited"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "workspace.created"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "workspace.updated"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "workspace.closed"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "workspace.renamed"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "workspace.moved"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "workspace.reordered"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "worktree.created"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "worktree.opened"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "worktree.removed"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "tab.created"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "tab.closed"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "tab.renamed"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "tab.moved"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "pane.created"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "pane.closed"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "pane.moved"
 command = ["bash", "notify.sh"]
 
 [[actions]]
@@ -105,6 +41,11 @@ command = ["bash", "notify.sh", "--enable"]
 id = "disable"
 title = "Grok Bot Notify: disable"
 command = ["bash", "notify.sh", "--disable"]
+
+[[actions]]
+id = "apply"
+title = "Grok Bot Notify: re-apply optional event hooks"
+command = ["bash", "configure.sh", "--apply"]
 
 [[panes]]
 id = "setup"

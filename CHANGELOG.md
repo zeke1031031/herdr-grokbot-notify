@@ -3,7 +3,7 @@
 All notable changes to Grok Bot Notify. Payload changes are always listed under
 **Payload**, even when they only add a field (see "Stability promise" in the README).
 
-## 0.4.0
+## 0.4.0 - 2026-10-28
 
 Notify-first release: the docs and default routine prompt now lead with "tell me when an
 agent finishes or needs me"; reading panes and auto-approving moved to
@@ -40,7 +40,7 @@ agent finishes or needs me"; reading panes and auto-approving moved to
   documents the "only when I'm away" preset (`--statuses done,blocked`).
 - `notify.sh --status` prints output-lines settings and the `notify.log` path.
 - CHANGELOG, payload field table, troubleshooting, update/rollback/uninstall and Windows
-  notes in the README (EN + 繁中).
+  notes in the README (English + Traditional Chinese).
 
 ### Docs
 - Install with `herdr plugin install zeke1031031/herdr-grokbot-notify --ref v0.4.0 --yes`

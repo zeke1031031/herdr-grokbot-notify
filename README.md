@@ -12,7 +12,7 @@ read the pane, approve safe local prompts, and tell you what needs your attentio
 a "shepherd" for your agents.
 
 ```json
-{"source":"herdr","plugin_version":"0.2.0","event":"pane.agent_status_changed",
+{"source":"herdr","plugin_version":"0.3.0","event":"pane.agent_status_changed",
  "reason":"needs_attention","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p2",
  "agent":"claude","agent_status":"blocked","title":"Fix login bug","cwd":"/home/me/app",
  "host":"laptop","at":"2026-01-01T12:00:00Z","test":false}
@@ -35,19 +35,32 @@ No terminal output is sent, only pane metadata. The routine decides whether to r
 | `event` | Any other herdr event you opt into. The raw herdr event data is in `data`. | off |
 | `test` | The `test` action. | - |
 
-Opt-in events: every hookable herdr 0.9.5 plugin event except the focus events is
-registered (19 in total), so you turn them on in config without editing the manifest:
+By default only the agent signals are registered with herdr (`pane.agent_status_changed`,
+`pane.agent_detected`, `pane.exited`), so herdr starts no hook process for anything else.
+Optional events are off until you turn them on with `configure.sh --events +name`
+(see [Configure from a script or a bot](#configure-from-a-script-or-a-bot)):
 
-- workspaces: `workspace.created`, `workspace.updated`, `workspace.closed`, `workspace.renamed`,
-  `workspace.moved`, `workspace.reordered`
-- worktrees: `worktree.created`, `worktree.opened`, `worktree.removed`
-- tabs: `tab.created`, `tab.closed`, `tab.renamed`, `tab.moved`
-- panes: `pane.created`, `pane.closed`, `pane.moved`, `pane.exited`,
-  `pane.agent_detected`, `pane.agent_status_changed`
-- `agent.released`: this plugin's shorthand for "`pane.agent_detected` with `released: true`".
+| Event | Fires when | `reason` |
+| --- | --- | --- |
+| `pane.agent_detected` | an agent started in a pane | `agent_started` |
+| `workspace.created` | a workspace was created | `event` |
+| `workspace.updated` | a workspace changed (e.g. its cwd or settings) | `event` |
+| `workspace.closed` | a workspace was closed | `event` |
+| `workspace.renamed` | a workspace was renamed | `event` |
+| `workspace.moved` | a workspace was moved | `event` |
+| `workspace.reordered` | the workspace list was reordered | `event` |
+| `worktree.created` | a git worktree was created from herdr | `event` |
+| `worktree.opened` | an existing git worktree was opened as a workspace | `event` |
+| `worktree.removed` | a git worktree was removed | `event` |
+| `tab.created` / `tab.closed` | a tab was created / closed | `event` |
+| `tab.renamed` / `tab.moved` | a tab was renamed / moved | `event` |
+| `pane.created` / `pane.closed` | a pane was created / closed | `event` |
+| `pane.moved` | a pane was moved | `event` |
 
-`workspace.focused`, `tab.focused` and `pane.focused` are deliberately not registered: they
-fire on every click or switch and would start a hook process each time.
+The default events can be switched off the same way (`-pane.exited`, `-agent.released`,
+`-pane.agent_status_changed`). `agent.released` is this plugin's name for
+"`pane.agent_detected` with `released: true`". `workspace.focused`, `tab.focused` and
+`pane.focused` are not offered: they fire on every click or switch.
 
 herdr does not let plugins hook terminal output (`pane.output_matched`), `pane.updated`,
 `layout.updated`, or `workspace.metadata_updated`; those are only on the socket
@@ -95,18 +108,54 @@ herdr plugin pane open --plugin grokbot-notify --entrypoint setup
 ```
 
 Paste the webhook URL and the Authorization value (input is hidden). That's it: every
-agent, finished / blocked / exited. The popup then offers optional advanced settings
-(agents, events, statuses, debounce) and a test webhook. It writes
+agent, finished / blocked / exited. The popup then offers optional events and settings
+(agents, statuses, debounce) and a test webhook. It writes
 `$(herdr plugin config-dir grokbot-notify)/.env` with mode `600`. Run it again any time;
-press Enter to keep the saved values. You can also run `bash setup.sh` from a checkout,
-or copy [`.env.example`](.env.example) there by hand and `chmod 600` it.
+press Enter to keep the saved values.
+
+### Configure from a script or a bot
+
+`configure.sh` does the same without prompts. It never takes secrets as arguments and
+never prints them.
+
+```sh
+ROOT="$(herdr plugin list --plugin grokbot-notify --json | jq -r '.result.plugins[0].plugin_root')"
+
+# secrets from the environment (or: printf '%s\n%s\n' "$URL" "$AUTH" | ... --secrets-from-stdin)
+GROKBOT_WEBHOOK_URL=... GROKBOT_WEBHOOK_AUTH=... bash "$ROOT/configure.sh" --url-from-env --auth-from-env
+
+bash "$ROOT/configure.sh" --list                          # every event, on/off, one-line description
+bash "$ROOT/configure.sh" --list --json                   # same, for a bot
+bash "$ROOT/configure.sh" --events +tab.created,+worktree.created,-pane.exited
+bash "$ROOT/configure.sh" --events none                   # back to the default events only
+bash "$ROOT/configure.sh" --agents claude,codex --statuses done,idle,blocked --debounce 60
+bash "$ROOT/configure.sh" --show                          # summary; secrets shown as set / MISSING
+bash "$ROOT/configure.sh" --test                          # send the test webhook
+```
+
+`--events` takes `+name` (turn on), `-name` (turn off), bare names (replace the optional
+set, defaults untouched), or `none` / `all` / `default`. Unknown names and `*.focused` are
+rejected and nothing is written.
+
+How optional events are registered: herdr only runs hooks listed in a plugin manifest and
+has no setting to add more, but it re-reads manifests before every event. Instead of
+editing this plugin's `herdr-plugin.toml` (which would conflict with `git pull` and be
+lost on `herdr plugin update`), `configure.sh` writes a tiny companion plugin,
+`grokbot-notify-events`, into the config dir and runs `herdr plugin link` on it. Its
+manifest lists only the events you chose, and its hook hands them to this plugin's
+`notify.sh` with the same config. With no optional events the companion is unlinked and
+deleted. If you edit `GROKBOT_NOTIFY_EVENTS` in `.env` by hand, run
+`configure.sh --apply` (or `herdr plugin action invoke apply --plugin grokbot-notify`)
+to sync the hooks.
+
+You can also copy [`.env.example`](.env.example) to the config dir by hand and `chmod 600` it.
 
 Settings (environment variables override the file):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `GROKBOT_NOTIFY_AGENTS` | `*` | Comma-separated agent ids/substrings (`claude,codex,cursor`); `*` = every agent |
-| `GROKBOT_NOTIFY_EVENTS` | `pane.agent_status_changed,agent.released,pane.exited` | Which herdr events may fire; `*` = all |
+| `GROKBOT_NOTIFY_EVENTS` | `pane.agent_status_changed,agent.released,pane.exited` | Which events may fire (set with `configure.sh --events`) |
 | `GROKBOT_NOTIFY_STATUSES` | `done,idle,blocked` | Statuses for `pane.agent_status_changed`. `done`/`idle` mean "finished" |
 | `GROKBOT_NOTIFY_DEBOUNCE_SECS` | `60` | Ignore repeats of the same pane + reason for this long (`0` = off). Each new completed turn still gets through |
 | `GROKBOT_NOTIFY_TIMEOUT_SECS` | `10` | HTTP timeout |
@@ -114,6 +163,35 @@ Settings (environment variables override the file):
 
 The agent filter applies to agent events (`finished`, `needs_attention`, `agent_exited`,
 `pane_exited`, `agent_started`). Other opt-in events are not filtered by agent.
+
+## Set up with Grok Bot
+
+Let your Grok Bot do all of the above. Paste this into a chat with it:
+
+```text
+Set up herdr -> Grok Bot notifications for me with the herdr-grokbot-notify plugin
+(https://github.com/zeke1031031/herdr-grokbot-notify). Work on the computer where herdr runs.
+Never print, log or echo the webhook URL or Authorization value, and never ask me to
+paste them in chat.
+
+1. Create a routine with a Webhook trigger called "herdr agent shepherd".
+2. Ask me for that routine's webhook URL and Authorization header with a secret request.
+3. Check herdr >= 0.9.5, bash, jq and curl. Install the plugin with
+   `herdr plugin install zeke1031031/herdr-grokbot-notify` (if it is already installed:
+   `herdr plugin update grokbot-notify`), then find its folder:
+   ROOT="$(herdr plugin list --plugin grokbot-notify --json | jq -r '.result.plugins[0].plugin_root')"
+4. Save the secrets: pass them only as the environment variables GROKBOT_WEBHOOK_URL and
+   GROKBOT_WEBHOOK_AUTH and run `bash "$ROOT/configure.sh" --url-from-env --auth-from-env`.
+5. Run `bash "$ROOT/configure.sh" --list` and show me the optional events with their
+   one-line descriptions. By default I only get finished, needs attention, agent exited
+   and pane exited, and no optional event is on. Turn on only the ones I pick, e.g.
+   `bash "$ROOT/configure.sh" --events +worktree.created,+tab.created`.
+6. Run `herdr plugin action invoke test --plugin grokbot-notify` and check that the
+   routine received a payload with "test": true.
+7. Set the routine's prompt to examples/routine-prompt.md from the repo. Then show me
+   `bash "$ROOT/configure.sh" --show` and tell me how to pause it
+   (`herdr plugin action invoke disable --plugin grokbot-notify`) or change events later.
+```
 
 ## 4. Test
 
@@ -134,6 +212,7 @@ HTTP listener with fake credentials and a stub `herdr` (needs python3).
 ```sh
 herdr plugin action invoke disable --plugin grokbot-notify   # pause (enable to resume)
 herdr plugin disable grokbot-notify                           # stop the hooks entirely
+bash "$ROOT/configure.sh" --events default                  # drop optional-event hooks (companion)
 herdr plugin uninstall grokbot-notify                         # or: herdr plugin unlink grokbot-notify
 rm -rf "$(herdr plugin config-dir grokbot-notify)"            # remove saved secrets
 ```
@@ -156,9 +235,10 @@ Also delete or rotate the webhook in the Grok Bot routine panel if you no longer
 
 ## How it works
 
-The manifest registers `notify.sh` for 19 herdr events (every hookable one except the
-`*.focused` events). For an event you
-didn't enable, `notify.sh` exits before doing any work. For agent events it keeps tiny
+The manifest registers `notify.sh` for the three agent events only; optional events
+come through the generated companion plugin (see above), so an event you didn't choose
+never starts a process. A `disable` action pauses both (a `paused` flag in the config
+dir). For agent events it keeps tiny
 per-pane state (last status, agent name, last completion sent) in the plugin state dir,
 asks `herdr agent get` for `completion_seq` and pane metadata, debounces per pane and
 reason (portable `mkdir` lock), then POSTs. A non-2xx response clears the debounce
@@ -191,6 +271,14 @@ payload 只有 pane 的中繼資料，不含終端機輸出。
 | `agent_started` | 偵測到 agent 啟動（`pane.agent_detected`） | 關 |
 | `event` | 其他 herdr 事件（workspace / worktree / tab / pane 生命週期，不含 `*.focused` 焦點事件），原始資料放在 `data` | 關 |
 
+預設只向 herdr 註冊 agent 相關的 3 個事件，其他事件完全不會啟動程序。可選事件用
+`configure.sh --events +名稱` 開啟、`-名稱` 關閉（`none` = 回到預設），`--list` 會列出每個事件與一行說明：
+`pane.agent_detected`（agent 啟動）、`workspace.created/updated/closed/renamed/moved/reordered`、
+`worktree.created/opened/removed`、`tab.created/closed/renamed/moved`、`pane.created/closed/moved`。
+herdr 沒有「另外加事件」的設定，但每次事件前都會重讀 manifest；所以 `configure.sh` 不改本 plugin 的檔案
+（避免 `git pull` 衝突、`herdr plugin update` 後消失），而是在 config 目錄產生一個只列出你選的事件的
+小型附屬 plugin `grokbot-notify-events` 並 `herdr plugin link`；沒有可選事件時會自動移除。
+
 **快速開始**
 
 1. 在 Grok Bot 建立一個 **Webhook 觸發**的 routine（提示詞可用 `examples/routine-prompt.md`），
@@ -200,13 +288,45 @@ payload 只有 pane 的中繼資料，不含終端機輸出。
    貼上 URL 和 Authorization（輸入不會顯示）即可；進階設定（agent、事件、狀態、debounce）可選。
    寫入 `herdr plugin config-dir grokbot-notify` 目錄下的 `.env`，權限 600。
 4. 測試：`herdr plugin action invoke test --plugin grokbot-notify`
-5. 暫停：`... invoke disable`；移除：`herdr plugin uninstall grokbot-notify`，並刪除 config 目錄。
+5. 暫停：`... invoke disable`；移除：先 `configure.sh --events default`，再 `herdr plugin uninstall grokbot-notify`，並刪除 config 目錄。
+
+**給腳本 / Bot 用的非互動設定**（不接受把秘密放在參數，也不會印出）：
+
+```sh
+ROOT="$(herdr plugin list --plugin grokbot-notify --json | jq -r '.result.plugins[0].plugin_root')"
+GROKBOT_WEBHOOK_URL=... GROKBOT_WEBHOOK_AUTH=... bash "$ROOT/configure.sh" --url-from-env --auth-from-env
+bash "$ROOT/configure.sh" --list            # 列出事件、開關狀態、一行說明（--json 給 bot）
+bash "$ROOT/configure.sh" --events +tab.created,-pane.exited
+bash "$ROOT/configure.sh" --show            # 摘要；秘密只顯示 set / MISSING
+```
+
+**用 Grok Bot 設定**：把下面這段貼給你的 Grok Bot（英文版見上方 “Set up with Grok Bot”）：
+
+```text
+請用 herdr-grokbot-notify plugin（https://github.com/zeke1031031/herdr-grokbot-notify）幫我設定
+herdr -> Grok Bot 通知，在跑 herdr 的那台電腦上操作。絕對不要印出、記錄或回顯 webhook URL 與
+Authorization，也不要叫我貼在聊天裡。
+
+1. 建立一個 Webhook 觸發的 routine，名稱 "herdr agent shepherd"。
+2. 用 secret request（秘密輸入）向我要這個 routine 的 webhook URL 和 Authorization 標頭。
+3. 確認 herdr >= 0.9.5、bash、jq、curl。安裝：`herdr plugin install zeke1031031/herdr-grokbot-notify`
+   （已安裝就 `herdr plugin update grokbot-notify`），再找出資料夾：
+   ROOT="$(herdr plugin list --plugin grokbot-notify --json | jq -r '.result.plugins[0].plugin_root')"
+4. 只透過環境變數 GROKBOT_WEBHOOK_URL、GROKBOT_WEBHOOK_AUTH 傳入秘密，執行
+   `bash "$ROOT/configure.sh" --url-from-env --auth-from-env`。
+5. 執行 `bash "$ROOT/configure.sh" --list`，把可選事件和一行說明列給我。預設只有完成、需要處理、
+   agent 結束、pane 結束，可選事件全部關閉；只開我選的，例如
+   `bash "$ROOT/configure.sh" --events +worktree.created,+tab.created`。
+6. 執行 `herdr plugin action invoke test --plugin grokbot-notify`，確認 routine 收到 "test": true。
+7. 把 repo 裡的 examples/routine-prompt.md 設為 routine 的提示詞，再給我看
+   `bash "$ROOT/configure.sh" --show`，並告訴我之後怎麼暫停（action disable）或改事件。
+```
 
 **設定**（`.env` 或環境變數）：
 
 - `GROKBOT_NOTIFY_AGENTS`：預設 `*`（全部 agent），可改成 `claude,codex` 等
 - `GROKBOT_NOTIFY_EVENTS`：預設 `pane.agent_status_changed,agent.released,pane.exited`；
-  可加入 `worktree.created`、`tab.created`、`workspace.closed` 等，或 `*` 全部
+  請用 `configure.sh --events` 修改（手動改 `.env` 後要跑 `configure.sh --apply`）
 - `GROKBOT_NOTIFY_STATUSES`：預設 `done,idle,blocked`
 - `GROKBOT_NOTIFY_DEBOUNCE_SECS`：預設 `60`（同一 pane 同一原因的重複通知間隔；每個新完成的工作仍會送出）
 

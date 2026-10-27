@@ -43,6 +43,7 @@ agent finishes or needs me"; reading panes and auto-approving moved to
   notes in the README (English + Traditional Chinese).
 
 ### Docs
+- README split into README.md (English) and README.zh-TW.md (Traditional Chinese).
 - Install with `herdr plugin install zeke1031031/herdr-grokbot-notify --ref v0.4.0 --yes`
   (herdr refuses a remote install without `--yes` when stdin is not a terminal).
 - The "Set up with Grok Bot" prompt shows the manifest preview first, has the user paste

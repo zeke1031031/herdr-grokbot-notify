@@ -8,7 +8,7 @@ OpenCode、Grok、Amp、Kimi、Qwen，以及所有 herdr 偵測得到的 agent�
 
 例如，你會在手機上收到這樣的通知：
 
-> **需要你：** claude 在 laptop 的 app (fix/login) 需要你回應：Fix login bug [api / review]
+> **Needs you:** claude needs your input in app (fix/login): Fix login bug [api / review] on laptop
 
 ## 快速開始
 
@@ -52,38 +52,33 @@ routine 每次通知會收到一份小型 JSON 本文：
 ## 透過 Grok Bot 設定
 
 把下面這段貼到你與 Grok Bot 的對話中。秘密不會經過聊天、命令列或環境變數：
-你會把它們貼進隱藏輸入的設定視窗。以下保留可直接使用的英文提示詞。
+你會把它們貼進隱藏輸入的設定視窗。
 
 ```text
-Set up herdr -> Grok Bot notifications for me with the herdr-grokbot-notify plugin
-(https://github.com/zeke1031031/herdr-grokbot-notify, version v0.4.0).
-Work on the computer where herdr runs. Never print, log or echo the webhook URL or the
-Authorization value, never put them in a command line or an environment variable, and
-never ask me to paste them in chat.
+請用 herdr-grokbot-notify plugin（https://github.com/zeke1031031/herdr-grokbot-notify，版本 v0.4.0）
+幫我設定 herdr -> Grok Bot 通知，在跑 herdr 的那台電腦上操作。絕對不要印出、記錄或回顯 webhook URL
+與 Authorization，不要把它們放進指令列或環境變數，也不要叫我貼在聊天裡。
 
-1. Create a routine with a Webhook trigger called "herdr agents". Use the "Notify-only"
-   prompt from examples/routine-prompt.md in the repo.
-2. Check herdr >= 0.9.5 (`herdr --version`) and that bash, jq and curl are installed.
-3. Before installing, show me what will be installed: summarise
+1. 建立一個 Webhook 觸發的 routine，名稱 "herdr agents"，提示詞用 repo 裡 examples/routine-prompt.md
+   的"Notify-only"版本。
+2. 確認 herdr >= 0.9.5（`herdr --version`），以及 bash、jq、curl 都已安裝。
+3. 安裝前先讓我看要裝什麼：摘要
    https://raw.githubusercontent.com/zeke1031031/herdr-grokbot-notify/v0.4.0/herdr-plugin.toml
-   (the hook events, actions and the commands they run) and wait for my OK. Then run
+   （掛勾的事件、action 與執行的指令），等我同意。然後執行
    `herdr plugin install zeke1031031/herdr-grokbot-notify --ref v0.4.0 --yes`
-   (this also upgrades an existing install) and show me the "Plugin install preview" it prints.
-   Then: ROOT="$(herdr plugin list --plugin grokbot-notify --json | jq -r '.result.plugins[0].plugin_root')"
-4. Ask me to open the setup popup myself and paste the routine's webhook URL and
-   Authorization header there:
+   （已安裝也用這個升級），並把它印出的"Plugin install preview"給我看。
+   接著：ROOT="$(herdr plugin list --plugin grokbot-notify --json | jq -r '.result.plugins[0].plugin_root')"
+4. 請我自己打開設定視窗，貼上 routine 的 webhook URL 和 Authorization 標頭：
    `herdr plugin pane open --plugin grokbot-notify --entrypoint setup`
-   Wait until I say it is done. (Only if I can't do that, and you hold the values in a
-   secret store: write them to the stdin of `bash "$ROOT/configure.sh" --secrets-from-stdin`,
-   URL on line 1 and Authorization on line 2, never as arguments or variables.)
-5. Run `bash "$ROOT/configure.sh" --test`. It must print "HTTP 2xx" and exit 0, and the
-   routine must receive a payload with "test": true. If not, follow the README's
-   Troubleshooting section.
-6. Show me `bash "$ROOT/configure.sh" --show` and tell me: by default I hear about finished,
-   needs input, agent exited and pane exited for every agent; `--statuses done,blocked`
-   means "only while I'm not looking at that pane"; `bash "$ROOT/configure.sh" --list`
-   shows optional events (all off); pause with
-   `herdr plugin action invoke disable --plugin grokbot-notify`.
+   等我說完成。（只有在我做不到、而你把值存在秘密儲存區時：把它們寫進
+   `bash "$ROOT/configure.sh" --secrets-from-stdin` 的 stdin，第 1 行 URL、第 2 行 Authorization，
+   絕不放在參數或變數裡。）
+5. 執行 `bash "$ROOT/configure.sh" --test`，必須印出 "HTTP 2xx" 並以 0 結束，routine 也要收到
+   "test": true 的 payload。失敗就照 README 的疑難排解（Troubleshooting）排查。
+6. 給我看 `bash "$ROOT/configure.sh" --show`，並告訴我：預設所有 agent 的完成、需要回應、agent 結束、
+   pane 結束都會通知；`--statuses done,blocked` 代表「只在我沒看著那個 pane 時」；
+   `bash "$ROOT/configure.sh" --list` 列出可選事件（預設全關）；暫停用
+   `herdr plugin action invoke disable --plugin grokbot-notify`。
 ```
 
 ## 什麼情況會觸發 webhook
@@ -96,7 +91,7 @@ never ask me to paste them in chat.
 | `needs_attention` | `blocked`：herdr 辨識到核准、提問或權限提示。 | 開 |
 | `agent_exited` | agent 程式離開 pane（結束、當掉、`Ctrl-C`）。`final_status` 是它最後的狀態。 | 開 |
 | `pane_exited` | 曾執行偵測到的 agent 的 pane 結束。一般 shell 不會觸發。 | 開 |
-| `status_changed` | 你額外加入通知狀態的其他狀態（`working`、`unknown`）。 | 關 |
+| `status_changed` | 你另外加進 statuses 的其他狀態（`working`、`unknown`）。 | 關 |
 | `agent_started` | herdr 偵測到 agent 在 pane 中啟動。 | 關 |
 | `event` | 你選擇開啟的其他 herdr 事件（見[選用的 herdr 事件](#選用的-herdr-事件)）。 | 關 |
 | `test` | `configure.sh --test`、設定視窗的測試，或 `test` action。 | - |
@@ -189,14 +184,14 @@ agent 篩選只適用於 agent 事件；選擇開啟的 herdr 事件不會依 ag
 ```sh
 ROOT="$(herdr plugin list --plugin grokbot-notify --json | jq -r '.result.plugins[0].plugin_root')"
 
-bash "$ROOT/configure.sh" --secrets-from-stdin < secrets.txt   # line 1 URL, line 2 Authorization
-bash "$ROOT/configure.sh" --test            # prints "HTTP <code>", exits non-zero unless 2xx
-bash "$ROOT/configure.sh" --show            # summary; secrets shown as set / MISSING
+bash "$ROOT/configure.sh" --secrets-from-stdin < secrets.txt   # 第 1 行 URL，第 2 行 Authorization
+bash "$ROOT/configure.sh" --test            # 印出 "HTTP <code>"，非 2xx 時以非 0 結束碼結束
+bash "$ROOT/configure.sh" --show            # 設定摘要；秘密顯示為 set / MISSING
 bash "$ROOT/configure.sh" --statuses done,blocked --agents claude,codex --debounce 60
-bash "$ROOT/configure.sh" --output-lines 40 # 0 = off
-bash "$ROOT/configure.sh" --list            # every event, on/off, one-line description (--json too)
+bash "$ROOT/configure.sh" --output-lines 40 # 0 = 關閉
+bash "$ROOT/configure.sh" --list            # 所有事件、開關狀態、單行說明（也支援 --json）
 bash "$ROOT/configure.sh" --events +tab.created,-pane.exited
-bash "$ROOT/configure.sh" --events default  # core events only, removes the companion plugin
+bash "$ROOT/configure.sh" --events default  # 只保留核心事件，移除附屬外掛
 ```
 
 `--url-from-env` / `--auth-from-env` 會讀取 `GROKBOT_WEBHOOK_URL` / `GROKBOT_WEBHOOK_AUTH`，
@@ -223,7 +218,7 @@ bash "$ROOT/configure.sh" --events default  # core events only, removes the comp
 不提供焦點事件（`*.focused`），因為每次點擊都會觸發。
 
 註冊方式：herdr 只執行外掛 manifest 中列出的 hook，但每次事件前都會重新讀取 manifest。
-`configure.sh` 會在 config 目錄寫入一個小型附屬外掛 `grokbot-notify-events`，只列出你選擇的事件，
+`configure.sh` 會在設定目錄寫入一個小型附屬外掛 `grokbot-notify-events`，只列出你選擇的事件，
 並對它執行 `herdr plugin link`。它的 hook 透過 `herdr plugin list` 找到目前安裝的位置，
 再把事件交給本外掛的 `notify.sh`，所以更新後仍能運作。本外掛自己的檔案不會被修改。
 若 herdr 拒絕連結，`configure.sh` 會還原先前的 `.env` 並告知沒有儲存。
@@ -274,20 +269,20 @@ herdr 不允許外掛掛勾終端機輸出（`pane.output_matched`）、`pane.up
 ## 更新、回復、移除
 
 ```sh
-# update (also the way to move a --ref install to a newer tag)
+# 更新（換成新的 tag，也適用於以 --ref 安裝的版本）
 herdr plugin install zeke1031031/herdr-grokbot-notify --ref v0.4.0 --yes
-# roll back to an earlier release
+# 回復舊版
 herdr plugin install zeke1031031/herdr-grokbot-notify --ref v0.3.0 --yes
 ```
 
 `herdr plugin update grokbot-notify --yes` 只會更新沒有固定 `--ref` 的安裝；固定 tag 的安裝會停在該 tag。
-設定保存在 config 目錄，更新或回復都會保留。本機 clone：`git pull` 或 `git checkout v0.3.0`。
+設定保存在設定目錄，更新或回復都會保留。本機 clone：`git pull` 或 `git checkout v0.3.0`。
 
 ```sh
-herdr plugin action invoke disable --plugin grokbot-notify   # pause (enable to resume)
-bash "$ROOT/configure.sh" --events default                  # 1. remove the companion plugin
-herdr plugin uninstall grokbot-notify                         # 2. or: herdr plugin unlink grokbot-notify
-rm -rf "$(herdr plugin config-dir grokbot-notify)"            # 3. remove saved secrets
+herdr plugin action invoke disable --plugin grokbot-notify   # 暫停（用 enable 恢復）
+bash "$ROOT/configure.sh" --events default                  # 1. 移除附屬外掛
+herdr plugin uninstall grokbot-notify                         # 2. 或用：herdr plugin unlink grokbot-notify
+rm -rf "$(herdr plugin config-dir grokbot-notify)"            # 3. 移除已儲存的秘密
 ```
 
 請在 `$ROOT` 還存在時先執行步驟 1，再執行步驟 2。如果不再使用，也請到 Grok Bot 的 routine 面板刪除或更換 webhook。
@@ -307,7 +302,8 @@ routine 不只可以通知你，還可以讀取 pane（`herdr pane read <pane_id
 
 ## 安全注意事項
 
-- 秘密只存放在 config 目錄的 `.env`（權限 600），不會放在外掛 checkout 中。
+- 請勿把 `.env`、Webhook URL 或 token 提交到 Git 或貼到公開地方。
+- 秘密只存放在設定目錄的 `.env`（權限 600），不會放在外掛 checkout 中。
   `.gitignore` 會排除 `.env` 檔案。
 - `.env` 以 `KEY=VALUE` 解析，絕不使用 `source` 載入，因此無法執行程式碼。
 - URL 與 Authorization 標頭透過權限 600 的暫存設定檔傳給 `curl`，不會出現在 `ps`，也不會被記錄或印出。

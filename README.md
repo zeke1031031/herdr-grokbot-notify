@@ -332,6 +332,7 @@ finished agent did, and optionally answer a narrow set of safe prompts. The prom
 
 ## Security notes
 
+- Never commit `.env`, the webhook URL or the token to Git or paste them anywhere public.
 - Secrets live only in the config dir `.env` (mode 600), never in the plugin checkout.
   `.gitignore` blocks `.env` files.
 - The `.env` is parsed as `KEY=VALUE`, never `source`d, so it cannot run code.

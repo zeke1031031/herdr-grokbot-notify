@@ -132,7 +132,7 @@ run tab.created '{"event":"tab.created","data":{"type":"tab_created","tab":{"tab
 check "opt-in tab.created with raw data" '[ "$(reqs)" = 21 ] && [ "$(last ".body.event+\"|\"+.body.reason+\"|\"+.body.data.tab.tab_id")" = "tab.created|event|w1:t2" ]'
 run worktree.removed '{"event":"worktree.removed","data":{"workspace_id":"w1","forced":false,"worktree":{"path":"/r/wt"}}}' GROKBOT_NOTIFY_EVENTS='*'
 check "EVENTS=* forwards anything" '[ "$(reqs)" = 22 ] && [ "$(last .body.workspace_id)" = w1 ]'
-run workspace.focused '{"event":"workspace.focused","data":{"workspace_id":"w1"}}' GROKBOT_NOTIFY_EVENTS=tab.created
+run workspace.moved '{"event":"workspace.moved","data":{"workspace_id":"w1"}}' GROKBOT_NOTIFY_EVENTS=tab.created
 check "unlisted event ignored" '[ "$(reqs)" = 22 ]'
 
 # --- failure / control paths ---------------------------------------------------
@@ -157,10 +157,10 @@ run $S "$(st w1:p7 "done" claude)"
 check ".env is parsed, not executed" '[ ! -e "$T/pwned" ]'
 
 # every declared hook is a known herdr 0.9.5 plugin event
-known=" pane.agent_status_changed pane.agent_detected pane.exited workspace.created workspace.updated workspace.closed workspace.renamed workspace.moved workspace.reordered workspace.focused worktree.created worktree.opened worktree.removed tab.created tab.closed tab.renamed tab.moved tab.focused pane.created pane.closed pane.focused pane.moved "
+known=" pane.agent_status_changed pane.agent_detected pane.exited workspace.created workspace.updated workspace.closed workspace.renamed workspace.moved workspace.reordered worktree.created worktree.opened worktree.removed tab.created tab.closed tab.renamed tab.moved pane.created pane.closed pane.moved "
 n=0; badev=""
 for e in $(sed -n 's/^on = "\(.*\)"/\1/p' "$ROOT/herdr-plugin.toml"); do n=$((n+1)); case "$known" in *" $e "*) ;; *) badev="$badev $e" ;; esac; done
-check "manifest declares all 22 hookable events ($n)" '[ "$n" = 22 ] && [ -z "$badev" ]'
+check "manifest declares 19 hookable events, no *.focused ($n)" '[ "$n" = 19 ] && [ -z "$badev" ] && ! grep -q "\\.focused\"" "$ROOT/herdr-plugin.toml"'
 
 echo "---- $pass passed, $fail failed"
 [ "$fail" = 0 ]

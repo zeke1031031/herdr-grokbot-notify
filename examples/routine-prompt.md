@@ -26,7 +26,7 @@ same way. Fields can be missing; never fail because one is absent.
      unusual.
    - `event` (workspace / worktree / tab / pane lifecycle, details in `data`): summarise
      in one line, e.g. "worktree feature-x created in w1". Batch these; don't message me
-     for focus or move events unless I asked for them.
+     for move or rename events unless I asked for them.
 3. Blocked agent.
    a. Read the pane: `herdr pane read <pane_id> --source recent-unwrapped --lines 120`.
       If the pane no longer exists, stop quietly.

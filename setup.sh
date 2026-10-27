@@ -65,7 +65,7 @@ case "${adv:-}" in
     echo "  Agents: comma-separated herdr agent ids (claude,codex,cursor,gemini,...) or * for all."
     agents="$(ask "Agents" "${agents:-*}")"
     echo "  Events: pane.agent_status_changed, agent.released, pane.exited, pane.agent_detected,"
-    echo "  workspace.*, worktree.*, tab.*, pane.created/closed/focused/moved (full names), or *."
+    echo "  workspace.*, worktree.*, tab.*, pane.created/closed/moved (full names; *.focused is not registered), or *."
     events="$(ask "Events" "${events:-pane.agent_status_changed,agent.released,pane.exited}")"
     echo "  Statuses: done, idle (= finished), blocked (= needs input), working, unknown."
     statuses="$(ask "Statuses" "${statuses:-done,idle,blocked}")"

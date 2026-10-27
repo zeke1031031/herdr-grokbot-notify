@@ -5,8 +5,10 @@ min_herdr_version = "0.9.5"
 description = "Wake a Grok Bot routine (webhook) when any herdr-detected coding agent finishes, needs input, or exits; optionally forward other herdr events."
 platforms = ["linux", "macos"]
 
-# Every hookable herdr 0.9.5 plugin event is registered so it can be enabled
-# from config without editing this file. notify.sh exits immediately for any
+# Every hookable herdr 0.9.5 plugin event except the *.focused ones is
+# registered so it can be enabled from config without editing this file.
+# Focus events fire on every click/switch, so they are left out to avoid
+# spawning a hook process each time. notify.sh exits immediately for any
 # event not listed in GROKBOT_NOTIFY_EVENTS (default: agent signals only).
 [[events]]
 on = "pane.agent_status_changed"
@@ -45,10 +47,6 @@ on = "workspace.reordered"
 command = ["bash", "notify.sh"]
 
 [[events]]
-on = "workspace.focused"
-command = ["bash", "notify.sh"]
-
-[[events]]
 on = "worktree.created"
 command = ["bash", "notify.sh"]
 
@@ -77,19 +75,11 @@ on = "tab.moved"
 command = ["bash", "notify.sh"]
 
 [[events]]
-on = "tab.focused"
-command = ["bash", "notify.sh"]
-
-[[events]]
 on = "pane.created"
 command = ["bash", "notify.sh"]
 
 [[events]]
 on = "pane.closed"
-command = ["bash", "notify.sh"]
-
-[[events]]
-on = "pane.focused"
 command = ["bash", "notify.sh"]
 
 [[events]]

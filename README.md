@@ -35,16 +35,19 @@ No terminal output is sent, only pane metadata. The routine decides whether to r
 | `event` | Any other herdr event you opt into. The raw herdr event data is in `data`. | off |
 | `test` | The `test` action. | - |
 
-Opt-in events: all hookable herdr 0.9.5 plugin events are registered, so you turn them on
-in config without editing the manifest:
+Opt-in events: every hookable herdr 0.9.5 plugin event except the focus events is
+registered (19 in total), so you turn them on in config without editing the manifest:
 
 - workspaces: `workspace.created`, `workspace.updated`, `workspace.closed`, `workspace.renamed`,
-  `workspace.moved`, `workspace.reordered`, `workspace.focused`
+  `workspace.moved`, `workspace.reordered`
 - worktrees: `worktree.created`, `worktree.opened`, `worktree.removed`
-- tabs: `tab.created`, `tab.closed`, `tab.renamed`, `tab.moved`, `tab.focused`
-- panes: `pane.created`, `pane.closed`, `pane.focused`, `pane.moved`, `pane.exited`,
+- tabs: `tab.created`, `tab.closed`, `tab.renamed`, `tab.moved`
+- panes: `pane.created`, `pane.closed`, `pane.moved`, `pane.exited`,
   `pane.agent_detected`, `pane.agent_status_changed`
 - `agent.released`: this plugin's shorthand for "`pane.agent_detected` with `released: true`".
+
+`workspace.focused`, `tab.focused` and `pane.focused` are deliberately not registered: they
+fire on every click or switch and would start a hook process each time.
 
 herdr does not let plugins hook terminal output (`pane.output_matched`), `pane.updated`,
 `layout.updated`, or `workspace.metadata_updated`; those are only on the socket
@@ -153,7 +156,8 @@ Also delete or rotate the webhook in the Grok Bot routine panel if you no longer
 
 ## How it works
 
-The manifest registers `notify.sh` for all 22 hookable herdr events. For an event you
+The manifest registers `notify.sh` for 19 herdr events (every hookable one except the
+`*.focused` events). For an event you
 didn't enable, `notify.sh` exits before doing any work. For agent events it keeps tiny
 per-pane state (last status, agent name, last completion sent) in the plugin state dir,
 asks `herdr agent get` for `completion_seq` and pane metadata, debounces per pane and
@@ -185,7 +189,7 @@ payload 只有 pane 的中繼資料，不含終端機輸出。
 | `pane_exited` | 執行過 agent 的 pane 結束（一般 shell 不會觸發） | 開 |
 | `status_changed` | 額外加入的狀態，例如 `working`、`unknown` | 關 |
 | `agent_started` | 偵測到 agent 啟動（`pane.agent_detected`） | 關 |
-| `event` | 其他 herdr 事件（workspace / worktree / tab / pane），原始資料放在 `data` | 關 |
+| `event` | 其他 herdr 事件（workspace / worktree / tab / pane 生命週期，不含 `*.focused` 焦點事件），原始資料放在 `data` | 關 |
 
 **快速開始**
 

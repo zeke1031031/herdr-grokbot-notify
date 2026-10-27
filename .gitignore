@@ -1,0 +1,9 @@
+# Never commit secrets or runtime state
+.env
+.env.*
+!.env.example
+*.log
+last_*
+.lock/
+disabled
+.DS_Store

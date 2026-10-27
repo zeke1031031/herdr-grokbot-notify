@@ -1,0 +1,33 @@
+id = "grokbot-notify"
+name = "Grok Bot Notify"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Wake a Grok Bot routine (webhook) when a coding agent pane finishes or gets blocked."
+platforms = ["linux", "macos"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "notify.sh"]
+
+[[actions]]
+id = "test"
+title = "Grok Bot Notify: send test webhook"
+command = ["bash", "notify.sh", "--test"]
+
+[[actions]]
+id = "enable"
+title = "Grok Bot Notify: enable"
+command = ["bash", "notify.sh", "--enable"]
+
+[[actions]]
+id = "disable"
+title = "Grok Bot Notify: disable"
+command = ["bash", "notify.sh", "--disable"]
+
+[[panes]]
+id = "setup"
+title = "Grok Bot Notify setup"
+placement = "popup"
+width = "70%"
+height = 20
+command = ["bash", "setup.sh"]
